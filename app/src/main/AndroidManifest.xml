@@ -27,6 +27,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.READ_LOGS" />
@@ -222,9 +223,19 @@
             android:exported="false" />
 
 
+        <!-- specialUse (API 34) gives the keep-alive foreground service a real
+             foregroundServiceType so the host process is not treated as "empty" and
+             cheaply reclaimable while a fullscreen game is in the foreground. Unlike
+             dataSync it carries no daily-runtime cap, which fits a long-lived terminal.
+             The value is ignored on pre-34 devices; the notification path is unchanged. -->
         <service
             android:name=".app.TermuxService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="terminal-session-keepalive" />
+        </service>
 
         <service
             android:name=".app.RunCommandService"

@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
@@ -213,7 +214,17 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     /** Make service run in foreground mode. */
     private void runStartForeground() {
         setupNotificationChannel();
-        startForeground(TermuxConstants.TERMUX_APP_NOTIFICATION_ID, buildNotification());
+        Notification notification = buildNotification();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // On Android 14+ a foreground service with no foregroundServiceType is treated as
+            // "empty" and is cheaply reclaimable (observed kill: reason=3 LOW_MEMORY, types=0).
+            // Declaring the specialUse type (matching the manifest) keeps the host process alive
+            // while a fullscreen game is foregrounded. specialUse has no daily-runtime cap.
+            startForeground(TermuxConstants.TERMUX_APP_NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else {
+            startForeground(TermuxConstants.TERMUX_APP_NOTIFICATION_ID, notification);
+        }
     }
 
     /** Make service leave foreground mode. */
