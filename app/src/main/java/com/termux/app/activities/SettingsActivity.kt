@@ -58,6 +58,7 @@ import com.newtermux.compose.outlinedMenuCard
 import com.newtermux.features.NewTermuxSettings
 import com.newtermux.features.TextExpansionStore
 import com.termux.app.TermuxActivity
+import com.termux.shared.android.PermissionUtils
 import com.termux.app.TermuxInstaller
 import com.termux.app.models.UserAction
 import com.termux.shared.android.AndroidUtils
@@ -197,6 +198,30 @@ private fun NtSwitch(context: Context, key: String, title: String, summary: Stri
     }
 }
 
+/**
+ * "Keep alive in background" toggle. Backed by NewTermuxSettings, and when enabled it also asks
+ * the user to allowlist the app from battery optimization (if not already exempt) since the wake
+ * lock alone can still lose to Doze.
+ */
+@Composable
+private fun KeepAliveSwitch(activity: Activity) {
+    val context = LocalContext.current
+    var checked by remember { mutableStateOf(NewTermuxSettings.isKeepAliveInBackground(context)) }
+    SwitchRow(
+        title = "Keep alive in background",
+        summary = "Hold a foreground wake lock while sessions run so the app survives when you launch a game. Turn off to save battery.",
+        checked = checked,
+    ) {
+        checked = it
+        NewTermuxSettings.set(context, NewTermuxSettings.KEY_KEEP_ALIVE_BACKGROUND, it)
+        if (it && !PermissionUtils.checkIfBatteryOptimizationsDisabled(context)) {
+            // Mark prompted so the first-run nudge won't also fire, then request the exemption.
+            NewTermuxSettings.setBatteryOptPrompted(context, true)
+            runCatching { PermissionUtils.requestDisableBatteryOptimizations(activity) }
+        }
+    }
+}
+
 @Composable
 private fun LogLevelRow(context: Context, current: Int, onSelect: (Int) -> Unit) {
     val values = remember { Logger.getLogLevelsArray().map { it.toString() } }
@@ -310,6 +335,9 @@ private fun FeaturesScreen(activity: Activity, onBack: () -> Unit) {
             NtSwitch(context, NewTermuxSettings.KEY_SHOW_DRAWER_EXPORT_SCRIPT, "Export Screen & Make Script", "Show Export Screen and Make Script buttons in the drawer")
             NtSwitch(context, NewTermuxSettings.KEY_SHOW_DRAWER_PKG_UPDATE, "Pkg Update Button", "Show a button that runs pkg update && pkg upgrade -y")
             NtSwitch(context, NewTermuxSettings.KEY_SHOW_DRAWER_CMD_BUTTONS, "Drawer Command Buttons", "Show customisable command shortcut buttons")
+
+            CategoryHeader("Background")
+            KeepAliveSwitch(activity)
 
             CategoryHeader("Permissions")
             NavRow("Grant Storage Permission", "Allow access to /sdcard and set up ~/storage symlinks") {
