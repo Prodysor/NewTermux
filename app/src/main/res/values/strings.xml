@@ -235,4 +235,12 @@
     <!-- Donate Preference -->
     <string name="donate_preference_title">Donate</string>
 
+    <!-- Keep alive in background / battery optimization -->
+    <string name="keep_alive_background_title">Keep alive in background</string>
+    <string name="keep_alive_background_summary">Hold a foreground wake lock while sessions are running so the app survives when you launch a game. Turn off to save battery.</string>
+    <string name="battery_opt_prompt_title">Keep NewTermux running</string>
+    <string name="battery_opt_prompt_message">To keep your terminal sessions alive while a game is in the foreground, allow NewTermux to ignore battery optimizations. Without this, Android may still shut the app down in the background.</string>
+    <string name="battery_opt_prompt_allow">Allow</string>
+    <string name="battery_opt_prompt_later">Not now</string>
+
 </resources>

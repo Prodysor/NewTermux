@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
@@ -31,6 +32,7 @@ import com.termux.shared.shell.command.runner.app.AppShell;
 import com.termux.shared.termux.settings.properties.TermuxAppSharedProperties;
 import com.termux.shared.termux.shell.command.environment.TermuxShellEnvironment;
 import com.termux.shared.termux.shell.TermuxShellUtils;
+import com.newtermux.features.NewTermuxSettings;
 import com.termux.shared.termux.TermuxConstants;
 import com.termux.shared.termux.TermuxConstants.TERMUX_APP.TERMUX_ACTIVITY;
 import com.termux.shared.termux.TermuxConstants.TERMUX_APP.TERMUX_SERVICE;
@@ -122,6 +124,14 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
         runStartForeground();
 
+        // If the process was just resurrected by AM (sticky service restart) after being torn down
+        // in the background, mShellManager is empty. Rehydrate the tab list from disk so the user
+        // gets their sessions (name + cwd) back instead of a single blank shell.
+        restoreSessionsIfNeeded();
+
+        // Hold the keep-alive wake lock continuously while any session is alive.
+        updateWakeLockForKeepAlive();
+
         SystemEventReceiver.registerPackageUpdateEvents(this);
     }
 
@@ -204,7 +214,17 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     /** Make service run in foreground mode. */
     private void runStartForeground() {
         setupNotificationChannel();
-        startForeground(TermuxConstants.TERMUX_APP_NOTIFICATION_ID, buildNotification());
+        Notification notification = buildNotification();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // On Android 14+ a foreground service with no foregroundServiceType is treated as
+            // "empty" and is cheaply reclaimable (observed kill: reason=3 LOW_MEMORY, types=0).
+            // Declaring the specialUse type (matching the manifest) keeps the host process alive
+            // while a fullscreen game is foregrounded. specialUse has no daily-runtime cap.
+            startForeground(TermuxConstants.TERMUX_APP_NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else {
+            startForeground(TermuxConstants.TERMUX_APP_NOTIFICATION_ID, notification);
+        }
     }
 
     /** Make service leave foreground mode. */
@@ -222,6 +242,9 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
     /** Process action to stop service. */
     private void actionStopService() {
         mWantsToStop = true;
+        // User explicitly stopped the service — drop the persisted tab snapshot so the next launch
+        // starts fresh instead of rehydrating the sessions we are about to kill.
+        SessionStatePersister.clear();
         killAllTermuxExecutionCommands();
         requestStopService();
     }
@@ -320,9 +343,10 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         mWifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, TermuxConstants.TERMUX_APP_NAME.toLowerCase());
         mWifiLock.acquire();
 
-        if (!PermissionUtils.checkIfBatteryOptimizationsDisabled(this)) {
-            PermissionUtils.requestDisableBatteryOptimizations(this);
-        }
+        // NOTE: the battery-optimization exemption is requested from TermuxActivity (a proper
+        // Activity context, one-time) rather than here — a service-context request needs
+        // FLAG_ACTIVITY_NEW_TASK and is silently dropped by background-start restrictions on
+        // modern Android, and firing it on every acquire was spammy.
 
         updateNotification();
 
@@ -359,18 +383,63 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
         return mWakeLock != null;
     }
 
-    /** Acquire wake lock automatically when activity goes to background. No-op if already held. */
-    public void acquireWakeLockAuto() {
-        if (mWakeLock != null) return;
-        mAutoWakeLock = true;
-        actionAcquireWakeLock();
+    /**
+     * Keep the partial wake lock + foreground service held CONTINUOUSLY while any terminal
+     * session is alive and the "Keep alive in background" setting is on, so the process survives
+     * being backgrounded by a fullscreen game. Acquired when the first session starts, released
+     * only when the last session ends (or the user explicitly stops the service).
+     *
+     * This replaces the previous behavior where the lock was tied to the Activity's
+     * onStart()/onStop() and so flapped (acquire/release) on every lifecycle transition — a game
+     * launch or PiP toggle would release it right when it was needed most.
+     *
+     * A user-held lock (toggled from the notification action) has mAutoWakeLock == false and is
+     * left untouched here.
+     */
+    public synchronized void updateWakeLockForKeepAlive() {
+        boolean keepAlive = NewTermuxSettings.isKeepAliveInBackground(this)
+            && !mShellManager.mTermuxSessions.isEmpty()
+            && !mWantsToStop;
+
+        if (keepAlive) {
+            if (mWakeLock == null) {
+                mAutoWakeLock = true;
+                actionAcquireWakeLock();
+            }
+        } else if (mAutoWakeLock) {
+            mAutoWakeLock = false;
+            actionReleaseWakeLock(true);
+        }
     }
 
-    /** Release wake lock if it was auto-acquired; leaves user-acquired wake locks alone. */
-    public void releaseWakeLockAuto() {
-        if (!mAutoWakeLock) return;
-        mAutoWakeLock = false;
-        actionReleaseWakeLock(true);
+    /**
+     * Rehydrate the tab list from disk if the process was resurrected with no live sessions.
+     * Restores the VIEW only — session name + working directory + failsafe flag. The PTY,
+     * scrollback, and any child process (e.g. a running claude CLI) died with the old PID and
+     * cannot be revived; the user resumes those with `claude --continue` etc.
+     */
+    private void restoreSessionsIfNeeded() {
+        if (mShellManager == null || !mShellManager.mTermuxSessions.isEmpty()) return;
+        List<SessionStatePersister.Snapshot> snaps = SessionStatePersister.load();
+        if (snaps.isEmpty()) return;
+
+        Logger.logInfo(LOG_TAG, "Restoring " + snaps.size() + " session(s) from persisted state");
+        for (SessionStatePersister.Snapshot s : snaps) {
+            try {
+                createTermuxSession(
+                    /* executablePath   */ null,   // default login shell
+                    /* arguments        */ null,
+                    /* stdin            */ null,
+                    /* workingDirectory */ (s.cwd == null || s.cwd.isEmpty())
+                                            ? TermuxConstants.TERMUX_HOME_DIR_PATH
+                                            : s.cwd,
+                    /* isFailSafe       */ s.failsafe,
+                    /* sessionName      */ s.name
+                );
+            } catch (Throwable t) {
+                Logger.logError(LOG_TAG, "Restore failed for session '" + s.name + "': " + t);
+            }
+        }
     }
 
     /** Process {@link TERMUX_SERVICE#ACTION_SERVICE_EXECUTE} intent to execute a shell command in
@@ -626,6 +695,11 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
 
         mShellManager.mTermuxSessions.add(newTermuxSession);
 
+        // Keep the persisted tab snapshot current and (re)acquire the keep-alive wake lock now that
+        // at least one session exists.
+        SessionStatePersister.save(this, new ArrayList<>(mShellManager.mTermuxSessions));
+        updateWakeLockForKeepAlive();
+
         // Remove the execution command from the pending plugin execution commands list since it has
         // now been processed
         if (executionCommand.isPluginExecutionCommand)
@@ -667,6 +741,11 @@ public final class TermuxService extends Service implements AppShell.AppShellCli
                 TermuxPluginUtils.processPluginExecutionCommandResult(this, LOG_TAG, executionCommand);
 
             mShellManager.mTermuxSessions.remove(termuxSession);
+
+            // Snapshot the reduced list so an exited session is NOT rehydrated next launch, and
+            // release the keep-alive wake lock once the last session is gone.
+            SessionStatePersister.save(this, new ArrayList<>(mShellManager.mTermuxSessions));
+            updateWakeLockForKeepAlive();
 
             // Notify {@link TermuxSessionsListViewController} that sessions list has been updated if
             // activity in is foreground

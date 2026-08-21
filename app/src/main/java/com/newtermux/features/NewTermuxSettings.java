@@ -25,6 +25,9 @@ public class NewTermuxSettings {
     public static final String KEY_TEXT_EXPANSION_ENABLED    = "text_expansion_enabled";
     public static final String KEY_EXTRA_KEYS_VISIBLE        = "extra_keys_visible";
     public static final String KEY_EXTRA_KEYS_IN_DRAWER      = "extra_keys_in_drawer";
+    public static final String KEY_KEEP_ALIVE_BACKGROUND     = "keep_alive_background";
+    // Internal one-time gate: set once we have shown the battery-optimization nudge.
+    public static final String KEY_BATTERY_OPT_PROMPTED      = "battery_opt_prompted";
 
     private static SharedPreferences prefs(Context ctx) {
         return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -88,6 +91,19 @@ public class NewTermuxSettings {
     public static boolean isExtraKeysInDrawer(Context ctx) {
         return prefs(ctx).getBoolean(KEY_EXTRA_KEYS_IN_DRAWER, false);
     }
+    /** Whether the process should hold a foreground wake lock while sessions are alive so it
+     *  survives being backgrounded by a fullscreen game. Defaults ON. */
+    public static boolean isKeepAliveInBackground(Context ctx) {
+        return prefs(ctx).getBoolean(KEY_KEEP_ALIVE_BACKGROUND, true);
+    }
+
+    // One-time battery-optimization nudge gate.
+    public static boolean wasBatteryOptPrompted(Context ctx) {
+        return prefs(ctx).getBoolean(KEY_BATTERY_OPT_PROMPTED, false);
+    }
+    public static void setBatteryOptPrompted(Context ctx, boolean v) {
+        prefs(ctx).edit().putBoolean(KEY_BATTERY_OPT_PROMPTED, v).apply();
+    }
 
     // Pending command — written by Settings, consumed and cleared by TermuxActivity.onResume()
     public static String getPendingCommand(Context ctx) {
@@ -126,6 +142,7 @@ public class NewTermuxSettings {
             case KEY_TEXT_EXPANSION_ENABLED:       return isTextExpansionEnabled(ctx);
             case KEY_EXTRA_KEYS_VISIBLE:           return isExtraKeysVisible(ctx);
             case KEY_EXTRA_KEYS_IN_DRAWER:         return isExtraKeysInDrawer(ctx);
+            case KEY_KEEP_ALIVE_BACKGROUND:        return isKeepAliveInBackground(ctx);
             default:                               return prefs(ctx).getBoolean(key, false);
         }
     }
