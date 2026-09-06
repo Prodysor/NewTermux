@@ -32,7 +32,7 @@ jobs:
           java-version: '17'
 
       # The Android app is intentionally excluded until the custom source-built
-      # bootstrap exists. Building it now would download official Termux
-      # bootstraps for the com.termux prefix and create a misleading artifact.
+      # bootstrap exists and its reviewed digest replaces UNSET in the lock.
+      # App builds fail closed without that locked artifact.
       - name: Test reusable terminal libraries
         run: ./gradlew :terminal-emulator:test :terminal-view:test :termux-shared:test

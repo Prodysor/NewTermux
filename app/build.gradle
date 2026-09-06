@@ -2,6 +2,13 @@ plugins {
     id "com.android.application"
 }
 
+def productBootstrapLock = new Properties()
+def productBootstrapLockFile = rootProject.file("gradle/product-bootstrap.properties")
+if (!productBootstrapLockFile.isFile()) {
+    throw new GradleException("Missing product bootstrap lock file: " + productBootstrapLockFile)
+}
+productBootstrapLockFile.withInputStream { productBootstrapLock.load(it) }
+
 ext {
     // The packageVariant defines the bootstrap variant that will be included in the app APK.
     // This must be supported by com.termux.shared.termux.TermuxBootstrap.PackageVariant or app will
@@ -10,6 +17,9 @@ ext {
     // by replacing $PREFIX since app code is dependant on the variant used to build the APK.
     // Currently supported values are: [ "apt-android-7" "apt-android-5" ]
     packageVariant = System.getenv("TERMUX_PACKAGE_VARIANT") ?: "apt-android-7" // Default: "apt-android-7"
+    productBootstrapPath = System.getenv("PRODYSOR_BOOTSTRAP_PATH") ?: ""
+    productBootstrapSha256 = productBootstrapLock.getProperty("sha256", "UNSET")
+    productBootstrapPackageCommit = productBootstrapLock.getProperty("packageCommit", "UNSET")
 }
 
 android {
@@ -41,6 +51,7 @@ android {
     }
 
     defaultConfig {
+        applicationId "com.prodysor.term"
         minSdkVersion project.properties.minSdkVersion.toInteger()
         targetSdkVersion project.properties.targetSdkVersion.toInteger()
         versionCode 118
@@ -50,15 +61,18 @@ android {
         validateVersionName(versionName)
 
         buildConfigField "String", "TERMUX_PACKAGE_VARIANT", "\"" + project.ext.packageVariant + "\"" // Used by TermuxApplication class
+        buildConfigField "String", "PRODUCT_BOOTSTRAP_SHA256", "\"" + project.ext.productBootstrapSha256 + "\""
+        buildConfigField "String", "PRODUCT_BOOTSTRAP_PACKAGE_COMMIT", "\"" + project.ext.productBootstrapPackageCommit + "\""
 
-        manifestPlaceholders.TERMUX_PACKAGE_NAME = "com.termux"
-        manifestPlaceholders.TERMUX_APP_NAME = "Termux"
+        manifestPlaceholders.TERMUX_PACKAGE_NAME = "com.prodysor.term"
+        manifestPlaceholders.TERMUX_APP_NAME = "Prodysor Terminal"
         manifestPlaceholders.TERMUX_API_APP_NAME = "Termux:API"
         manifestPlaceholders.TERMUX_BOOT_APP_NAME = "Termux:Boot"
         manifestPlaceholders.TERMUX_FLOAT_APP_NAME = "Termux:Float"
         manifestPlaceholders.TERMUX_STYLING_APP_NAME = "Termux:Styling"
         manifestPlaceholders.TERMUX_TASKER_APP_NAME = "Termux:Tasker"
         manifestPlaceholders.TERMUX_WIDGET_APP_NAME = "Termux:Widget"
+        manifestPlaceholders.PRODYSOR_BOOTSTRAP_SHA256 = project.ext.productBootstrapSha256
 
         externalNativeBuild {
             ndkBuild {
@@ -66,23 +80,18 @@ android {
             }
         }
 
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
         splits {
             abi {
                 enable ((gradle.startParameter.taskNames.any { it.contains("Debug") } && splitAPKsForDebugBuilds == "1") ||
                     (gradle.startParameter.taskNames.any { it.contains("Release") } && splitAPKsForReleaseBuilds == "1"))
                 reset ()
-                include 'x86', 'x86_64', 'armeabi-v7a', 'arm64-v8a'
-                universalApk true
+                include 'arm64-v8a'
+                universalApk false
             }
-        }
-    }
-
-    signingConfigs {
-        debug {
-            storeFile file('testkey_untrusted.jks')
-            keyAlias 'alias'
-            storePassword 'xrj45yWGLbsO7W0v'
-            keyPassword 'xrj45yWGLbsO7W0v'
         }
     }
 
@@ -91,10 +100,6 @@ android {
             minifyEnabled true
             shrinkResources false // Reproducible builds
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-        }
-
-        debug {
-            signingConfig signingConfigs.debug
         }
     }
 
@@ -164,47 +169,19 @@ def validateVersionName(String versionName) {
         throw new GradleException("The versionName '"  + versionName + "' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html.")
 }
 
-def downloadBootstrap(String arch, String expectedChecksum, String version) {
+def calculateSha256(File file) {
     def digest = java.security.MessageDigest.getInstance("SHA-256")
-
-    def localUrl = "src/main/cpp/bootstrap-" + arch + ".zip"
-    def file = new File(projectDir, localUrl)
-    if (file.exists()) {
+    file.withInputStream { input ->
         def buffer = new byte[8192]
-        def input = new FileInputStream(file)
         while (true) {
             def readBytes = input.read(buffer)
             if (readBytes < 0) break
             digest.update(buffer, 0, readBytes)
         }
-        def checksum = new BigInteger(1, digest.digest()).toString(16)
-        while (checksum.length() < 64) { checksum = "0" + checksum }
-        if (checksum == expectedChecksum) {
-            return
-        } else {
-            logger.quiet("Deleting old local file with wrong hash: " + localUrl + ": expected: " + expectedChecksum + ", actual: " + checksum)
-            file.delete()
-        }
     }
-
-    def remoteUrl = "https://github.com/termux/termux-packages/releases/download/bootstrap-" + version + "/bootstrap-" + arch + ".zip"
-    logger.quiet("Downloading " + remoteUrl + " ...")
-
-    file.parentFile.mkdirs()
-    def out = new BufferedOutputStream(new FileOutputStream(file))
-
-    def connection = new URL(remoteUrl).openConnection()
-    connection.setInstanceFollowRedirects(true)
-    def digestStream = new java.security.DigestInputStream(connection.inputStream, digest)
-    out << digestStream
-    out.close()
-
     def checksum = new BigInteger(1, digest.digest()).toString(16)
     while (checksum.length() < 64) { checksum = "0" + checksum }
-    if (checksum != expectedChecksum) {
-        file.delete()
-        throw new GradleException("Wrong checksum for " + remoteUrl + ": expected: " + expectedChecksum + ", actual: " + checksum)
-    }
+    return checksum
 }
 
 clean {
@@ -215,29 +192,44 @@ clean {
     }
 }
 
-task downloadBootstraps() {
+task prepareProductBootstrap() {
     doLast {
-        def packageVariant = project.ext.packageVariant
-        if (packageVariant == "apt-android-7") {
-            def version = "2026.02.12-r1" + "%2B" + "apt.android-7"
-            downloadBootstrap("aarch64", "ea2aeba8819e517db711f8c32369e89e7c52cee73e07930ff91185e1ab93f4f3", version)
-            downloadBootstrap("arm", "a38f4d3b2f735f83be2bf54eff463e86dc32a3e2f9f861c1557c4378d249c018", version)
-            downloadBootstrap("i686", "f5bc0b025b9f3b420b5fcaeefc064f888f5f22a0d6fd7090f4aac0c33eb3555b", version)
-            downloadBootstrap("x86_64", "b7fd0f2e3a4de534be3144f9f91acc768630fc463eaf134ab2e64c545e834f7a", version)
-        } else if (packageVariant == "apt-android-5") {
-            def version = "2022.04.28-r6" + "+" + packageVariant
-            downloadBootstrap("aarch64", "913609d439415c828c5640be1b0561467e539cb1c7080662decaaca2fb4820e7", version)
-            downloadBootstrap("arm", "26bfb45304c946170db69108e5eb6e3641aad751406ce106c80df80cad2eccf8", version)
-            downloadBootstrap("i686", "46dcfeb5eef67ba765498db9fe4c50dc4690805139aa0dd141a9d8ee0693cd27", version)
-            downloadBootstrap("x86_64", "615b590679ee6cd885b7fd2ff9473c845e920f9b422f790bb158c63fe42b8481", version)
-        } else {
-            throw new GradleException("Unsupported TERMUX_PACKAGE_VARIANT \"" + packageVariant + "\"")
+        if (project.ext.packageVariant != "apt-android-7") {
+            throw new GradleException("Product builds only support TERMUX_PACKAGE_VARIANT=apt-android-7")
+        }
+
+        def sourcePath = project.ext.productBootstrapPath
+        def expectedChecksum = project.ext.productBootstrapSha256
+        if (!sourcePath) {
+            throw new GradleException("PRODYSOR_BOOTSTRAP_PATH is required for app builds")
+        }
+        if (!java.util.regex.Pattern.matches("^[0-9a-f]{64}$", expectedChecksum)) {
+            throw new GradleException("PRODYSOR_BOOTSTRAP_SHA256 must be a lowercase SHA-256 value")
+        }
+
+        def sourceFile = rootProject.file(sourcePath)
+        if (!sourceFile.isFile()) {
+            throw new GradleException("Product bootstrap does not exist: " + sourceFile)
+        }
+        def sourceChecksum = calculateSha256(sourceFile)
+        if (sourceChecksum != expectedChecksum) {
+            throw new GradleException("Wrong product bootstrap checksum: expected " + expectedChecksum + ", actual " + sourceChecksum)
+        }
+
+        def destinationFile = new File(projectDir, "src/main/cpp/bootstrap-aarch64.zip")
+        if (sourceFile.canonicalFile != destinationFile.canonicalFile) {
+            destinationFile.parentFile.mkdirs()
+            java.nio.file.Files.copy(sourceFile.toPath(), destinationFile.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+        def destinationChecksum = calculateSha256(destinationFile)
+        if (destinationChecksum != expectedChecksum) {
+            destinationFile.delete()
+            throw new GradleException("Embedded bootstrap checksum changed while copying")
         }
     }
 }
 
 afterEvaluate {
-    android.applicationVariants.all { variant ->
-        variant.javaCompileProvider.get().dependsOn(downloadBootstraps)
-    }
+    tasks.named("preBuild").configure { dependsOn(prepareProductBootstrap) }
 }
