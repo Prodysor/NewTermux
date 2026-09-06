@@ -1,0 +1,42 @@
+name: Product CI
+
+on:
+  push:
+    branches:
+      - 'product/**'
+  pull_request:
+    branches:
+      - 'product/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@5
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run upstream unit tests
+        run: ./gradlew test
+
+      - name: Build ARM64 debug baseline
+        env:
+          TERMUX_PACKAGE_VARIANT: apt-android-7
+          TERMUX_SPLIT_APKS_FOR_DEBUG_BUILDS: '1'
+        run: ./gradlew assembleDebug
+
+      - name: Require ARM64 artifact
+        run: test -n "$(find app/build/outputs/apk/debug -type f -name '*arm64-v8a.apk' -print -quit)"
+
