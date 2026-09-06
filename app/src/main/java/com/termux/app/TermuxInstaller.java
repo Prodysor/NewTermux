@@ -27,9 +27,13 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -155,31 +159,39 @@ final class TermuxInstaller {
 
                     final byte[] buffer = new byte[8096];
                     final List<Pair<String, String>> symlinks = new ArrayList<>(50);
+                    final Set<String> bootstrapPaths = new HashSet<>();
 
                     final byte[] zipBytes = loadZipBytes();
                     try (ZipInputStream zipInput = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
                         ZipEntry zipEntry;
                         while ((zipEntry = zipInput.getNextEntry()) != null) {
-                            if (zipEntry.getName().equals("SYMLINKS.txt")) {
-                                BufferedReader symlinksReader = new BufferedReader(new InputStreamReader(zipInput));
+                            String zipEntryName = zipEntry.getName();
+                            File targetFile = resolveStrictChild(TERMUX_STAGING_PREFIX_DIR, zipEntryName, false);
+                            if (!bootstrapPaths.add(targetFile.getPath()))
+                                throw new IOException("Duplicate bootstrap path: " + zipEntryName);
+                            if (zipEntryName.equals("SYMLINKS.txt")) {
+                                BufferedReader symlinksReader = new BufferedReader(
+                                    new InputStreamReader(zipInput, StandardCharsets.UTF_8));
                                 String line;
                                 while ((line = symlinksReader.readLine()) != null) {
-                                    String[] parts = line.split("←");
-                                    if (parts.length != 2)
+                                    String[] parts = line.split("←", -1);
+                                    if (parts.length != 2 || parts[0].isEmpty() || parts[1].isEmpty())
                                         throw new RuntimeException("Malformed symlink line: " + line);
                                     String oldPath = parts[0];
-                                    String newPath = TERMUX_STAGING_PREFIX_DIR_PATH + "/" + parts[1];
-                                    symlinks.add(Pair.create(oldPath, newPath));
+                                    File stagingLink = resolveStrictChild(TERMUX_STAGING_PREFIX_DIR, parts[1], true);
+                                    File finalLink = resolveStrictChild(TERMUX_PREFIX_DIR, parts[1], true);
+                                    requireSymlinkTargetInsidePrefix(TERMUX_PREFIX_DIR, finalLink, oldPath);
+                                    if (!bootstrapPaths.add(stagingLink.getPath()))
+                                        throw new IOException("Duplicate bootstrap symlink destination: " + parts[1]);
+                                    symlinks.add(Pair.create(oldPath, stagingLink.getAbsolutePath()));
 
-                                    error = ensureDirectoryExists(new File(newPath).getParentFile());
+                                    error = ensureDirectoryExists(stagingLink.getParentFile());
                                     if (error != null) {
                                         showBootstrapErrorDialog(activity, whenDone, Error.getErrorMarkdownString(error));
                                         return;
                                     }
                                 }
                             } else {
-                                String zipEntryName = zipEntry.getName();
-                                File targetFile = new File(TERMUX_STAGING_PREFIX_DIR_PATH, zipEntryName);
                                 boolean isDirectory = zipEntry.isDirectory();
 
                                 error = ensureDirectoryExists(isDirectory ? targetFile : targetFile.getParentFile());
@@ -237,6 +249,49 @@ final class TermuxInstaller {
                 }
             }
         }.start();
+    }
+
+    /** Resolve an untrusted relative path and require it to remain a strict child of {@code root}. */
+    static File resolveStrictChild(File root, String relativePath, boolean allowLeadingDot) throws IOException {
+        if (relativePath == null || relativePath.isEmpty() || relativePath.indexOf('\\') >= 0 ||
+            new File(relativePath).isAbsolute())
+            throw new IOException("Bootstrap path must be relative and non-empty: " + relativePath);
+
+        String normalizedPath = relativePath;
+        if (allowLeadingDot && normalizedPath.startsWith("./"))
+            normalizedPath = normalizedPath.substring(2);
+        if (normalizedPath.endsWith("/"))
+            normalizedPath = normalizedPath.substring(0, normalizedPath.length() - 1);
+        if (normalizedPath.isEmpty())
+            throw new IOException("Bootstrap path must identify a strict child: " + relativePath);
+        for (String component : normalizedPath.split("/", -1)) {
+            if (component.isEmpty() || component.equals(".") || component.equals(".."))
+                throw new IOException("Bootstrap path contains an unsafe component: " + relativePath);
+        }
+
+        File canonicalRoot = root.getCanonicalFile();
+        File canonicalChild = new File(canonicalRoot, normalizedPath).getCanonicalFile();
+        String rootPrefix = canonicalRoot.getPath() + File.separator;
+        if (!canonicalChild.getPath().startsWith(rootPrefix))
+            throw new IOException("Bootstrap path escapes its destination: " + relativePath);
+
+        return canonicalChild;
+    }
+
+    /** Require a symlink target to resolve inside the final prefix while preserving its original spelling. */
+    static void requireSymlinkTargetInsidePrefix(File prefix, File finalLink, String target) throws IOException {
+        if (target == null || target.isEmpty())
+            throw new IOException("Bootstrap symlink target must be non-empty");
+
+        File canonicalPrefix = prefix.getCanonicalFile();
+        File targetFile = new File(target);
+        File resolvedTarget = targetFile.isAbsolute()
+            ? targetFile.getCanonicalFile()
+            : new File(finalLink.getParentFile(), target).getCanonicalFile();
+        String prefixPath = canonicalPrefix.getPath();
+        String targetPath = resolvedTarget.getPath();
+        if (!targetPath.equals(prefixPath) && !targetPath.startsWith(prefixPath + File.separator))
+            throw new IOException("Bootstrap symlink target escapes the final prefix: " + target);
     }
 
     public static void showBootstrapErrorDialog(Activity activity, Runnable whenDone, String message) {

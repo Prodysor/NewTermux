@@ -200,8 +200,12 @@ task prepareProductBootstrap() {
 
         def sourcePath = project.ext.productBootstrapPath
         def expectedChecksum = project.ext.productBootstrapSha256
+        def expectedPackageCommit = project.ext.productBootstrapPackageCommit
         if (!sourcePath) {
             throw new GradleException("PRODYSOR_BOOTSTRAP_PATH is required for app builds")
+        }
+        if (!java.util.regex.Pattern.matches('^[0-9a-f]{40}$', expectedPackageCommit)) {
+            throw new GradleException("Product bootstrap packageCommit must be a lowercase full Git commit SHA")
         }
         if (!java.util.regex.Pattern.matches('^[0-9a-f]{64}$', expectedChecksum)) {
             throw new GradleException("PRODYSOR_BOOTSTRAP_SHA256 must be a lowercase SHA-256 value")
@@ -210,6 +214,9 @@ task prepareProductBootstrap() {
         def sourceFile = rootProject.file(sourcePath)
         if (!sourceFile.isFile()) {
             throw new GradleException("Product bootstrap does not exist: " + sourceFile)
+        }
+        if (sourceFile.canonicalFile.toPath().startsWith(rootProject.projectDir.canonicalFile.toPath())) {
+            throw new GradleException("Product bootstrap input must be outside the source checkout")
         }
         def sourceChecksum = calculateSha256(sourceFile)
         if (sourceChecksum != expectedChecksum) {
