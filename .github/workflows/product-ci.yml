@@ -90,7 +90,6 @@ jobs:
           GRADLE_USER_HOME: ${{ runner.temp }}/product-gradle-home
           PRODYSOR_BOOTSTRAP_PATH: ${{ runner.temp }}/bootstrap-aarch64.zip
           TERMUX_PACKAGE_VARIANT: apt-android-7
-          TERMUX_SPLIT_APKS_FOR_DEBUG_BUILDS: '1'
         run: |
           set -euo pipefail
           ./gradlew --no-daemon --no-build-cache --no-configuration-cache clean
