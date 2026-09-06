@@ -12,11 +12,14 @@ allowed until every release gate in this document has passed.
 - Prefix: `/data/data/com.prodysor.term/files/usr`.
 - Java namespaces remain `com.termux.*`; they are implementation namespaces,
   not the Android application ID.
-- The deprecated Android `sharedUserId` is removed. The MVP has no plugins.
+- The deprecated Android `sharedUserId` is permanently removed. Drop-in Termux
+  plugins are not supported; any future extension must use an explicit IPC API.
 - There is no automatic migration from `com.termux`.
 
-The application ID and prefix are immutable once package builds start. The
-display name and visual brand may change before the first public release.
+The application ID and prefix are accepted as permanent by the repository owner
+for retained installs. Artifacts produced before the signed-repository gate are
+disposable and must not be distributed. The display name and visual brand may
+change before the first public release.
 
 ## Supported product
 
@@ -32,9 +35,11 @@ display name and visual brand may change before the first public release.
 
 The project proceeds only if all of the following work without binary patching:
 
-1. A source-built ARM64 bootstrap uses the exact production prefix.
-2. A minimal, independently signed APT repository supplies the bootstrap and
-   its complete transitive dependency closure.
+1. A source-built ARM64 bootstrap uses the exact production prefix and is
+   embedded in the APK with a checked SHA-256.
+2. A minimal, independently signed APT repository publishes packages built from
+   the same pinned recipes as the embedded bootstrap, including the complete
+   transitive dependency closure needed for updates.
 3. The bootstrap trusts only the Prodysor repository and rejects missing,
    expired, unknown, or incorrect repository signatures.
 4. A fresh install starts a native dynamic executable and a shebang script.
@@ -83,4 +88,3 @@ package catalogue.
 - NewTermux UI features are ported individually only after the package POC.
 - Release automation stays disabled until signing and promotion gates exist.
 - The product branch must not merge the unrelated legacy snapshot history.
-
