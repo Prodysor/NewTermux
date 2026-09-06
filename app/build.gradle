@@ -203,7 +203,7 @@ task prepareProductBootstrap() {
         if (!sourcePath) {
             throw new GradleException("PRODYSOR_BOOTSTRAP_PATH is required for app builds")
         }
-        if (!java.util.regex.Pattern.matches("^[0-9a-f]{64}$", expectedChecksum)) {
+        if (!java.util.regex.Pattern.matches('^[0-9a-f]{64}$', expectedChecksum)) {
             throw new GradleException("PRODYSOR_BOOTSTRAP_SHA256 must be a lowercase SHA-256 value")
         }
 
